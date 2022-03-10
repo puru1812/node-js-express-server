@@ -6,7 +6,7 @@ const app = express();
 const clients = {};
 //All running games
 const games = {};
-
+const onGoingTeamEvents = {};
 const wsServer = new ws.Server({
 	noServer: true
 });
@@ -44,7 +44,7 @@ wsServer.on('connection', conn => {
 	// confirm connection to client
 	conn.send(JSON.stringify(payLoad));
 
-	//	console.log("connected client" + clientId);
+	console.log("connected client" + clientId);
 
 	conn.on("open", function(code, reason) {
 		console.log("Connection opened");
@@ -58,60 +58,240 @@ wsServer.on('connection', conn => {
 	conn.on('message', str => {
 		// All messages sent and recieved in JSON format
 		const result = JSON.parse(str);
-
+		console.log("got" + JSON.stringify(result));
 		switch (result.method) {
-			case "createGame": {
+
+			case "TeamEvent": {
 				let clientId = result["clientId"];
-				let gameID = guid();
+				let gameID = result["gameId"];
+				let teamId = result["teamId"];
+				let data = result["data"];
+				if (!gameID)
+					return;
+				const game = games[gameID];
+				if (!game || game == undefined)
+					return;
+				let team = null;
+				//console.log("check team" + teamId);
 
-				games[gameID] = {
-					"id": gameID,
-					"rows": 10,
-					"col": 10,
-					"clients": [],
-					"teams": []
+				for (let i = 0; i < game.teams.length; i++) {
+
+					if (game.teams[i]["id"] == teamId) {
+						//console.log(game.teams[i]["id"] + " " + teamId + "comapre team" + JSON.stringify(game.teams[i]));
+						team = game.teams[i];
+
+						break;
+					}
+				}
+				if (!team)
+					return;
+				//check if this is a new event, create one if not exists
+				let eventID = null;
+				if (!result["eventID"]) {
+					eventID = guid();
+					onGoingTeamEvents[eventID] = {
+						"data": data,
+						"complete": false,
+						"acceptedClients": [clientId],
+						"rejectedClients": [],
+						"teamId": teamId
+					};
+				} else {
+					eventID = result["eventID"];
 				}
 
-				let game = games[gameID];
+				//console.log("recived here" + result["type"]);
+				if (result["type"] == "confirmCreate") {
+					// some accpeted
 
-				let color = {
-					"0": "WHITE",
-					"1": "BLACK",
-					"2": "MAGENTA",
-					"3": "GRAY",
-					"4": "RED",
-					"5": "GREEN",
-					"6": "BLUE",
-					"7": "YELLOW",
-					"8": "ORANGE",
-					"9": "CYAN"
-				} [game.clients.length];
+					//console.log(onGoingTeamEvents[eventID].acceptedClients.length + "in confirm" + team.clients.length);
+					if (onGoingTeamEvents[eventID].acceptedClients.indexOf(clientId) < 0) {
+						onGoingTeamEvents[eventID].acceptedClients.push(clientId);
+					}
+					// if everyone has accepted
+					if (onGoingTeamEvents[eventID].acceptedClients.length == team.clients.length - 1) {
+						onGoingTeamEvents[eventID].complete = true;
+						delete onGoingTeamEvents[eventID];
+						// ask everyone to execute
 
-				// adding this client to the game
-				game.clients.push({
-					"clientId": clientId,
-					"color": color
-				});
+						let toSend = {
+							"type": "confirm",
+							"data": data
+						}
+						team.clients.forEach((id) => {
 
-				const payLoad = {
-					"method": "gameCreated",
-					"game": games[gameID]
+							let payload2 = {
+								"method": "teamEvent",
+								"data": toSend
+							};
+							clients[id].connection.send(JSON.stringify(payload2));
+
+							// Inform all clients to in the team about this event
+						});
+
+					}
+				} else if (result["type"] == "rejectCreate") {
+
+					//got a rejection
+					if (onGoingTeamEvents[eventID].rejectedClients.indexOf(clientId) < 0) {
+						onGoingTeamEvents[eventID].rejectedClients.push(clientId);
+					}
+					//console.log(onGoingTeamEvents[eventID].rejectedClients.length + "in reject" + team.clients.length);
+					//if everyone has rejected
+					if (onGoingTeamEvents[eventID].rejectedClients.length == team.clients.length - 1) {
+						delete onGoingTeamEvents[eventID];
+					}
+
+				} else {
+					//ask for acceptance
+
+					let toSend = {
+						"type": "acceptRequest",
+						"data": data
+					}
+					if (team.clients.length > 1) {
+						team.clients.forEach((id) => {
+							//do not sent to the current client
+							if (id != clientId) {
+								let payload2 = {
+									"method": "teamEvent",
+									"data": toSend,
+									"teamId": teamId,
+									"clientId": clientId,
+									"eventID": eventID
+								}
+
+								clients[id].connection.send(JSON.stringify(payload2));
+								// Inform all clients to in the team about this event
+							}
+						});
+					} else {
+						onGoingTeamEvents[eventID].complete = true;
+						delete onGoingTeamEvents[eventID];
+						// ask everyone to execute
+
+						let toSend = {
+							"type": "confirm",
+							"data": data
+						}
+						team.clients.forEach((id) => {
+
+							let payload2 = {
+								"method": "teamEvent",
+								"data": toSend
+							};
+							clients[id].connection.send(JSON.stringify(payload2));
+
+							// Inform all clients to in the team about this event
+						});
+
+					}
+
+
+
+
+
+
+
 				}
-
-				let conn = clients[clientId].connection;
-				conn.send(JSON.stringify(payLoad));
-				//notify  client game was created
-
-				const payLoad2 = {
-					"method": "joinedGame",
-					"game": game
-				};
-				conn.send(JSON.stringify(payLoad2));
-				//notify  client joined the game
-
 			}
 			break;
+		case "GameEvent": {
+			let clientId = result["clientId"];
+			let gameID = result["gameId"];
+			if (!gameID)
+				return;
+			const game = games[gameID];
+			if (!game || game == undefined)
+				return;
+			if (game.clients) {
+				game.clients.forEach((clientId) => {
+					if (client.clientId != clientId) {
+						let payload2 = {
+							"method": "gameEvent",
+							"gameId": gameID
+						};
+						clients[client.clientId].connection.send(JSON.stringify(payload2));
+						// Inform all clients to start the game
+					}
+				});
+			}
+		}
+		break;
+		case "createGame": {
+			let clientId = result["clientId"];
+			let gameID = guid();
 
+			games[gameID] = {
+				"id": gameID,
+				"rows": 10,
+				"col": 10,
+				"clients": [],
+				"teams": []
+			}
+
+			let game = games[gameID];
+
+			let color = {
+				"0": "WHITE",
+				"1": "BLACK",
+				"2": "MAGENTA",
+				"3": "GRAY",
+				"4": "RED",
+				"5": "GREEN",
+				"6": "BLUE",
+				"7": "YELLOW",
+				"8": "ORANGE",
+				"9": "CYAN"
+			} [game.clients.length];
+
+			// adding this client to the game
+			game.clients.push({
+				"clientId": clientId,
+				"color": color
+			});
+
+			const payLoad = {
+				"method": "gameCreated",
+				"game": games[gameID]
+			}
+
+			let conn = clients[clientId].connection;
+			conn.send(JSON.stringify(payLoad));
+			//notify  client game was created
+
+			const payLoad2 = {
+				"method": "joinedGame",
+				"game": game
+			};
+			conn.send(JSON.stringify(payLoad2));
+			//notify  client joined the game
+
+		}
+		break;
+		case "startGame": {
+			let clientId = result["clientId"];
+			let gameID = result["gameId"];
+			if (!gameID)
+				return;
+			const game = games[gameID];
+			if (!game || game == undefined)
+				return;
+			if (game.clients) {
+				game.clients.forEach((client) => {
+					if (client.clientId != clientId) {
+						let payload2 = {
+							"method": "startedGame",
+							"gameId": gameID
+						};
+						clients[client.clientId].connection.send(JSON.stringify(payload2));
+						// Inform all clients to start the game
+
+					}
+				});
+			}
+		}
+		break;
 		case "createTeam": {
 
 			let clientId = result["clientId"];
